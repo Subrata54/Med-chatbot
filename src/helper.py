@@ -1,4 +1,5 @@
 import os
+from typing import List
 
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
@@ -8,7 +9,6 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from langchain_core.embeddings import Embeddings
 
-from typing import List
 
 load_dotenv()
 
@@ -84,23 +84,68 @@ class HuggingFaceRemoteEmbeddings(Embeddings):
             provider="hf-inference"
         )
 
+        # IMPORTANT:
+        # This model produces 384-dimensional embeddings.
         self.model = "sentence-transformers/all-MiniLM-L6-v2"
 
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        embeddings = self.client.feature_extraction(
-            texts,
-            model=self.model
-        )
+    def _convert_embedding(self, embedding):
+        """
+        Convert Hugging Face output into a single
+        384-dimensional vector.
+        """
 
-        return embeddings.tolist()
+        if hasattr(embedding, "tolist"):
+            embedding = embedding.tolist()
+
+        # If HF returns [[...384 values...]]
+        if (
+            isinstance(embedding, list)
+            and len(embedding) == 1
+            and isinstance(embedding[0], list)
+        ):
+            embedding = embedding[0]
+
+        # Safety check
+        if not isinstance(embedding, list):
+            raise ValueError(
+                f"Invalid embedding returned by Hugging Face: {type(embedding)}"
+            )
+
+        if len(embedding) != 384:
+            raise ValueError(
+                f"Embedding dimension is {len(embedding)}, "
+                f"but Pinecone index requires 384."
+            )
+
+        return [float(x) for x in embedding]
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+
+        results = []
+
+        for text in texts:
+            embedding = self.client.feature_extraction(
+                text,
+                model=self.model
+            )
+
+            vector = self._convert_embedding(embedding)
+
+            results.append(vector)
+
+        return results
 
     def embed_query(self, text: str) -> List[float]:
+
         embedding = self.client.feature_extraction(
             text,
             model=self.model
         )
 
-        return embedding[0].tolist()
+        # IMPORTANT:
+        # Do NOT use embedding[0].
+        # That was causing the wrong dimension.
+        return self._convert_embedding(embedding)
 
 
 # -----------------------------
